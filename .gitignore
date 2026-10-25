@@ -1,0 +1,30 @@
+# Build & distribution outputs (unggah .zip hasil build ke GitHub Releases, bukan ke source tree)
+build/
+dist/
+releases/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Runtime binaries & logs
+*.log
+*.log.old
+*.tmp
+*.download
+yt-dlp.exe
+yt-dlp_x86_win7.exe
+ffmpeg.exe
+ffplay.exe
+ffprobe.exe
+ytdlp_update_stamp.txt
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,7 @@
+Letakkan ffmpeg.exe di folder ini (moonloader\radio\bin\).
+
+PAKET WINDOWS 7: pakai FFmpeg 7.0.x "essentials" (build lama). Versi 8.x tidak lagi
+jalan di Windows 7. Arsip versi lama ada di:
+  https://www.gyan.dev/ffmpeg/builds/  (bagian "release builds" -> arsip versi lama)
+atau https://github.com/GyanD/codexffmpeg/releases (cari tag 7.0.x, file *essentials_build.zip)
+Salin hanya ffmpeg.exe dari folder bin\ di dalam zip.

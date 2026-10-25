@@ -1,0 +1,7 @@
+Letakkan ffmpeg.exe di folder ini (moonloader\radio\bin\).
+
+Unduh build "release essentials" dari https://www.gyan.dev/ffmpeg/builds/
+lalu salin hanya ffmpeg.exe dari folder bin\ di dalam zip.
+
+Tanpa ffmpeg.exe, MoonRadio tetap jalan dalam mode fallback (raw stream),
+tetapi seek bar dan transcoding 192kbps tidak optimal.
