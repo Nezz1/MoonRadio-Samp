@@ -17,6 +17,28 @@
 
 </div>
 
+> [!WARNING]
+> **Disclaimer Sistem Operasi (Sangat Disarankan Windows 10 / 11):**
+> Sangat disarankan menggunakan **Windows 10 atau Windows 11 (64-bit)** untuk performa *streaming* tercepat (~1 detik via *In-Memory Extractor*) dan stabilitas penuh. Versi **Windows 7** disediakan sebagai opsi kompatibilitas *legacy*, namun **terkadang tidak stabil dan memiliki *delay* lebih lama** karena keterbatasan protokol TLS/SSL bawaan Windows 7, proses *spawning* konsol 32-bit, serta penghentian dukungan resmi Python 3.9+ dan `yt-dlp` terbaru pada Windows 7.
+
+---
+
+## 📸 Galeri Tampilan In-Game (Screenshots)
+
+| 🏠 Beranda YouTube Music & Radio Pintar | 🎶 Playlist Kurasi & Mix YouTube Music |
+| :---: | :---: |
+| ![Beranda YouTube Music](assets/screen_home.png) | ![Playlist Kurasi](assets/screen_playlists.png) |
+| **💿 Now Playing, Visualizer & Lirik `.LRC`** | **🔎 Pencarian Real-Time & Saran Kata Kunci** |
+| ![Now Playing & Lirik](assets/screen_player.png) | ![Pencarian & Katalog](assets/screen_search.png) |
+
+<div align="center">
+
+**🎛️ Studio Audio FX (3-Band Parametric EQ, Speed/Pitch, Slowed + Reverb, Nightcore)**
+
+![Studio Audio FX](assets/screen_audiofx.png)
+
+</div>
+
 ---
 
 ## ✨ Fitur Utama
@@ -67,8 +89,8 @@ Pemain **tidak perlu** menginstal Python atau library tambahan apa pun:
 
 1. Pastikan GTA SA-MP kamu sudah terpasang **MoonLoader** beserta library **`mimgui`** (`moonloader/lib/mimgui`).
 2. Unduh paket rilis terbaru di halaman **[GitHub Releases](../../releases)**:
-   - 💻 **`MoonRadio_Win10_11.zip`** — untuk pengguna **Windows 8 / 10 / 11 (64-bit)**.
-   - 🪟 **`MoonRadio_Win7.zip`** — khusus pengguna **Windows 7 SP1** (juga kompatibel di Windows 10/11).
+   - 💻 **`MoonRadio_Win10_11.zip`** *(Sangat Direkomendasikan)* — untuk pengguna **Windows 10 / 11 (64-bit)**, jauh lebih cepat dan stabil.
+   - 🪟 **`MoonRadio_Win7.zip`** *(Legacy / Eksperimental)* — khusus pengguna **Windows 7 SP1** *(Catatan: versi Windows 7 terkadang tidak stabil dan memiliki delay pemutaran lebih lama dibanding Windows 10/11)*.
 3. Ekstrak dan salin folder **`moonloader/`** ke dalam direktori utama GTA San Andreas kamu:
    ```text
    GTA San Andreas/
@@ -80,7 +102,7 @@ Pemain **tidak perlu** menginstal Python atau library tambahan apa pun:
             └─ ffmpeg.exe
    ```
 4. Masuk ke dalam game GTA SA-MP:
-   - Ketik **`/radio`** (atau tekan tombol **`F10`**) untuk membuka jendela utama MoonRadio.
+   - Ketik **`/radio`** atau **`/mr`** (atau tekan tombol **`F9`**) untuk membuka jendela utama MoonRadio.
    - Atau langsung ketik **`/rplay [judul lagu]`** untuk memutar lagu tanpa membuka menu!
 5. *(Khusus pemakaian pertama kali)*: Tunggu ±10–25 detik saat `MoonRadioBridge.exe` mengunduh `yt-dlp.exe` resmi secara otomatis di latar belakang.
 
@@ -121,12 +143,17 @@ Pemain **tidak perlu** menginstal Python atau library tambahan apa pun:
 
 Proyek ini menyediakan dua varian build agar dapat berjalan di seluruh versi Windows:
 
-| Fitur / Komponen | Paket Standar (`MoonRadio`) | Paket Legacy (`MoonRadio_Win7`) |
+| Fitur / Komponen | Paket Standar (`MoonRadio`) — **Direkomendasikan** | Paket Legacy (`MoonRadio_Win7`) |
 | :--- | :--- | :--- |
-| **Target OS** | Windows 8.1, 10, 11 (64-bit) | Windows 7 SP1 (32/64-bit) & Win 10/11 |
-| **Runtime Bundled** | Python 3.9+ (64-bit) | Python 3.8.10 (32-bit, bebas error `api-ms-win-core-path`) |
-| **Binary `yt-dlp`** | Rilis resmi `yt-dlp/yt-dlp` (`yt-dlp.exe`) | Build Win7 `nicolaasjan/yt-dlp` (`yt-dlp_x86_win7.exe`) |
+| **Target OS** | **Windows 10 & 11 (64-bit)** | Windows 7 SP1 (32/64-bit) |
+| **Stabilitas & Kecepatan** | **Sangat Stabil & Instan** (*In-Memory `yt_dlp`* ~1 detik + *Disk Cache* 0.01 detik) | **Terkadang Tidak Stabil / Delay Lebih Lama** (bergantung pada proses eksternal 32-bit & stack TLS Win7) |
+| **Runtime Bundled** | Python 3.13 (64-bit) + `yt-dlp` In-Memory + SoundCloud Fallback | Python 3.8.10 (32-bit, bebas error `api-ms-win-core-path`) |
+| **Binary `yt-dlp`** | Terintegrasi di RAM + Rilis resmi `yt-dlp/yt-dlp` (`yt-dlp.exe`) | Build Win7 `nicolaasjan/yt-dlp` (`yt-dlp_x86_win7.exe`) |
 | **Rekomendasi `ffmpeg.exe`** | FFmpeg 7.x / 8.x Release Essentials | FFmpeg 7.0.2 / Builds Win7 kompatibel |
+
+> [!IMPORTANT]
+> **Mengapa Disarankan Menggunakan Windows 10 / 11?**
+> Di Windows 10/11, `MoonRadioBridge.exe` mengekstrak audio langsung di dalam memori RAM (*Warm In-Memory Extractor*) tanpa perlu memanggil `.exe` eksternal berulang kali. Pada **Windows 7**, sistem operasi sudah tidak lagi menerima pembaruan sertifikat TLS/SSL modern dan Python 3.11+ tidak lagi didukung, sehingga ekstraksi audio harus melalui proses *workaround* eksternal yang membuat pemutaran lagu terkadang terasa lambat atau kurang stabil.
 
 ---
 

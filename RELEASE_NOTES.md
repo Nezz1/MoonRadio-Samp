@@ -20,13 +20,16 @@ Rilis penuh **MoonRadio Aurora v4.0.0** untuk **GTA SA-MP (MoonLoader)**. Stream
 
 ### 📦 Pilih Paket Sesuai Windows Kamu
 
-1. **`MoonRadio_v4.0.0_Win10_11.zip`** *(Direkomendasikan untuk Windows 8.1 / 10 / 11 64-bit)*
-2. **`MoonRadio_v4.0.0_Win7.zip`** *(Khusus Windows 7 SP1 32/64-bit — juga bisa dipakai di Windows 10/11)*
+1. **`MoonRadio_v4.0.0_Win10_11.zip`** *(⭐ **Sangat Direkomendasikan** untuk Windows 10 / 11 64-bit — Cepat, Mulus & Stabil)*
+2. **`MoonRadio_v4.0.0_Win7.zip`** *(Khusus Windows 7 SP1 32/64-bit — Legacy)*
+
+> ⚠️ **Disclaimer Pengguna Windows 7:**
+> Sangat disarankan menggunakan **Windows 10 atau Windows 11** untuk pengalaman terbaik. Versi **Windows 7** disediakan khusus sebagai dukungan *legacy*, namun **terkadang tidak stabil dan memiliki *delay* lebih lama saat memutar lagu** karena keterbatasan jaringan TLS/SSL bawaan Windows 7 serta dihentikannya dukungan resmi Python modern & `yt-dlp` terbaru di sistem operasi Windows 7.
 
 ---
 
 ### 🚀 Cara Pasang
 1. Pastikan GTA SA-MP kamu sudah terpasang **MoonLoader** dan library **`mimgui`**.
 2. Ekstrak file `.zip` yang kamu unduh, lalu salin folder **`moonloader`** ke dalam folder instalasi GTA San Andreas kamu.
-3. Masuk ke dalam game dan ketik **`/radio`** (atau tekan **`F10`**), atau langsung ketik **`/rplay [judul lagu]`**.
+3. Masuk ke dalam game dan ketik **`/radio`** atau **`/mr`** (atau tekan **`F9`**), atau langsung ketik **`/rplay [judul lagu]`**.
 4. *(Saat pertama kali dipakai, tunggu ±10–25 detik hingga `MoonRadioBridge.exe` selesai mengunduh `yt-dlp.exe` otomatis).*

@@ -184,6 +184,43 @@ end
 ensureDirs()
 math.randomseed(os.time())
 
+-- mimgui wajib menemukan <Fonts>\trebucbd.ttf; Windows lite/modifikasi sering tidak punya font ini
+-- dan script langsung mati saat menu pertama kali digambar. Sediakan salinan font pengganti di
+-- moonloader\radio\fonts lalu arahkan getFolderPath(0x14) ke sana hanya bila aslinya tidak ada.
+do
+  local sysFonts = (os.getenv('SystemRoot') or 'C:\\Windows') .. '\\Fonts'
+  local okFp, fp = pcall(getFolderPath, 0x14)
+  if okFp and type(fp) == 'string' and fp ~= '' then sysFonts = fp end
+  if not doesFileExist(sysFonts .. '\\trebucbd.ttf') then
+    local dir = ROOT .. '\\fonts'
+    local dst = dir .. '\\trebucbd.ttf'
+    pcall(lfs.mkdir, dir)
+    if not doesFileExist(dst) then
+      local cands = { 'trebuc.ttf', 'segoeuib.ttf', 'arialbd.ttf', 'tahomabd.ttf', 'verdanab.ttf',
+                      'segoeui.ttf', 'arial.ttf', 'tahoma.ttf', 'verdana.ttf', 'calibrib.ttf', 'calibri.ttf' }
+      for _, name in ipairs(cands) do
+        local src = io.open(sysFonts .. '\\' .. name, 'rb')
+        if src then
+          local data = src:read('*a')
+          src:close()
+          local out = data and #data > 1024 and io.open(dst, 'wb')
+          if out then out:write(data); out:close(); break end
+        end
+      end
+    end
+    if doesFileExist(dst) then
+      XT.fontFallbackDir = dir
+      local origGetFolderPath = getFolderPath
+      local patched = function(id, ...)
+        if id == 0x14 then return dir end
+        return origGetFolderPath(id, ...)
+      end
+      getFolderPath = patched
+      if type(_G) == 'table' then rawset(_G, 'getFolderPath', patched) end
+    end
+  end
+end
+
 -- ======================================================================
 -- BASS AUDIO ENGINE + DX8 STUDIO FX
 -- ======================================================================
@@ -1878,14 +1915,17 @@ YT.requestPrefetch = function(t)
   YT.writeCmd('cmd_prefetch.txt', string.format('%s|%s|%s|%s', seq, vid, cleanT, cleanA))
 end
 
+YT.lastArtReqGlobalAt = 0
 YT.requestArtIfMissing = function(t)
-  if not t then return end
+  if not t or S.loading then return end
   local vid = extractVideoId(t)
   if not vid or vid == '' or vid:match('^pl_') then return end
   local now = os.clock()
+  if (now - (YT.lastArtReqGlobalAt or 0)) < 0.25 then return end
   if YT.artReqAt[vid] and (now - YT.artReqAt[vid]) < 60.0 then return end
   YT.artReqAt[vid] = now
-  YT.requestMeta(t)
+  YT.lastArtReqGlobalAt = now
+  YT.requestMeta(t, true)
 end
 
 YT.requestStream = function(t, startSec)
@@ -1910,7 +1950,7 @@ YT.requestStream = function(t, startSec)
   return true
 end
 
-YT.requestMeta = function(t)
+YT.requestMeta = function(t, artOnly)
   if not t then return end
   local vid = extractVideoId(t)
   if not vid or vid == '' then return end
@@ -1918,7 +1958,7 @@ YT.requestMeta = function(t)
   YT.metaUntil = os.clock() + 14.0
   local cleanT = (t.title or vid):gsub('[|\r\n]+', ' ')
   local cleanA = (t.artist or 'YouTube Music'):gsub('[|\r\n]+', ' ')
-  YT.writeCmd('cmd_meta.txt', string.format('%s|%s|%s|%s', seq, vid, cleanT, cleanA))
+  YT.writeCmd('cmd_meta.txt', string.format('%s|%s|%s|%s|%d', seq, vid, cleanT, cleanA, artOnly and 1 or 0))
 end
 
 local function startBassUrlStream(streamUrl, durSec, startSec)
@@ -2103,7 +2143,7 @@ SMART.playAutoMix = function(seedTrack, customPrefix)
   if not seedTrack then return false end
   local mix, vInfo = SMART.buildMix(seedTrack, cfg.main.autoMixCount or 30)
   if #mix < 6 and seedTrack.videoId then
-    YT.requestSearch(seedTrack.videoId .. ';;' .. (seedTrack.title or '') .. ' ' .. (seedTrack.artist or ''), 'automix', cfg.main.autoMixCount or 25)
+    YT.requestSearch(seedTrack.videoId .. ';;' .. (seedTrack.title or '') .. ' ' .. (seedTrack.artist or ''), 'automix_append', cfg.main.autoMixCount or 25)
   end
   if #mix <= 1 then
     for idx, lt in ipairs(lib) do
@@ -2377,27 +2417,29 @@ YT.poll = function()
             else
               flash('Playlist kosong atau gagal dimuat', true)
             end
-          elseif mode == 'automix' and #results > 0 then
+          elseif (mode == 'automix' or mode == 'automix_append') and #results > 0 then
             local seed = S.cur or results[1]
-            local mix = { seed }
-            for _, r in ipairs(results) do
-              if r ~= seed then mix[#mix + 1] = r end
-            end
-            playQueue(mix, 'YouTube Smart Mix: ' .. seed.title, 1)
-          elseif mode == 'automix_append' and #results > 0 then
-            ensureCustomQueue()
-            local inQ = {}
-            for _, qt in ipairs(queue) do if qt.path then inQ[qt.path] = true end end
-            local added = 0
-            for _, r in ipairs(results) do
-              if r.path and not inQ[r.path] then
-                inQ[r.path] = true
-                queue[#queue + 1] = r
-                added = added + 1
+            if mode == 'automix_append' or (S.cur and S.cur == seed and (S.loading or S.playing)) then
+              ensureCustomQueue()
+              local inQ = {}
+              for _, qt in ipairs(queue) do if qt.path then inQ[qt.path] = true end end
+              local added = 0
+              for _, r in ipairs(results) do
+                if r.path and not inQ[r.path] then
+                  inQ[r.path] = true
+                  queue[#queue + 1] = r
+                  added = added + 1
+                end
               end
-            end
-            if added > 0 then
-              flash('AutoPlay YT Music: +' .. added .. ' lagu se-vibe ditambahkan ke Antrean', false, S.cur and S.cur.title or '')
+              if added > 0 then
+                flash('AutoPlay YT Music: +' .. added .. ' lagu se-vibe ditambahkan ke Antrean', false, S.cur and S.cur.title or '')
+              end
+            else
+              local mix = { seed }
+              for _, r in ipairs(results) do
+                if r ~= seed then mix[#mix + 1] = r end
+              end
+              playQueue(mix, 'YouTube Smart Mix: ' .. seed.title, 1)
             end
           end
         elseif st == 'ERR' then
@@ -2619,12 +2661,12 @@ local function nowInfo()
   if S.loading then
     local el = math.max(0, os.clock() - (S.loadAt or os.clock()))
     local stTxt = (S.loadStatus and S.loadStatus ~= '') and S.loadStatus or '[1/2] Mengambil link audio dari YouTube Music...'
-    return c.title, string.format('Memuat (%.1fs)  ·  %s', el, stTxt), al
+    return c.title, string.format('Memuat (%.1fs)  Â·  %s', el, stTxt), al
   end
   if not S.playing and S.err and S.err ~= '' then
     return c.title, 'Gagal Diputar: ' .. S.err .. '  (Klik Play untuk coba lagi)', al
   end
-  if c.durStr and c.durStr ~= '' then al = al .. '  ·  ' .. c.durStr end
+  if c.durStr and c.durStr ~= '' then al = al .. '  Â·  ' .. c.durStr end
   return c.title, c.artist, al
 end
 
@@ -3589,7 +3631,7 @@ ui.drawList = function(listName, list, view, w, h, opts)
       local fs = pushFont('small')
       if isCur and S.loading then
         local el = math.max(0, os.clock() - (S.loadAt or os.clock()))
-        local ltxt = string.format('Memuat audio (%.1fs)  ·  %s', el, S.loadStatus ~= '' and S.loadStatus or 'Menghubungkan ke YouTube Music...')
+        local ltxt = string.format('Memuat audio (%.1fs)  Â·  %s', el, S.loadStatus ~= '' and S.loadStatus or 'Menghubungkan ke YouTube Music...')
         T(dl, tx, p0.y + 27, U32(C.gold), ellipsize(ltxt, maxw, 'sload'))
       elseif isCur and not S.playing and S.err and S.err ~= '' then
         T(dl, tx, p0.y + 27, U32(C.red), ellipsize('Gagal: ' .. S.err .. ' (Klik untuk coba lagi)', maxw, 'serr'))
@@ -3597,13 +3639,13 @@ ui.drawList = function(listName, list, view, w, h, opts)
         local badges = ''
         if not t.url then
           if t.durStr and t.durStr ~= '' then
-            badges = badges .. '  ·  [' .. t.durStr .. ']'
+            badges = badges .. '  Â·  [' .. t.durStr .. ']'
           end
           if cfg.main.showVibeBadge then
-            badges = badges .. '  ·  ' .. SMART.vibeLabel(t)
+            badges = badges .. '  Â·  ' .. SMART.vibeLabel(t)
           end
-          if t.hasLrc then badges = badges .. '  ·  LRC' end
-          if getBookmark(t) then badges = badges .. '  ·  Drop' end
+          if t.hasLrc then badges = badges .. '  Â·  LRC' end
+          if getBookmark(t) then badges = badges .. '  Â·  Drop' end
         end
         T(dl, tx, p0.y + 27, U32(C.sub), ellipsize(sub .. badges, maxw, 's'))
       end
@@ -3878,7 +3920,7 @@ ui.drawStage = function(w, h)
     T(dl, p.x + ax + 12, telY + 7, U32(C.sub), 'Signal Telemetry')
     T(dl, p.x + ax + 12, telY + 26, U32(C.text), ellipsize('FX: ' .. fxpNow.name, telW - 24, 'tl1'))
     if telH >= 72 then
-      local spdTxt = string.format('%s  ·  Speed %d%%', khz, cfg.main.speed or 100)
+      local spdTxt = string.format('%s  Â·  Speed %d%%', khz, cfg.main.speed or 100)
       T(dl, p.x + ax + 12, telY + 46, U32(C.sub), ellipsize(spdTxt, telW - 24, 'tl2'))
     end
     if telH >= 92 then
@@ -4010,7 +4052,7 @@ ui.drawStage = function(w, h)
   ui.drawMatteCard(dl, p.x + rx, lyY, p.x + rx + rw, lyY + 46, UI_R.CTRL, false, curLyr ~= nil, ac)
   ui.drawNote(dl, p.x + rx + 18, lyY + 16, 13, U32(curLyr and ac or C.sub))
   T(dl, p.x + rx + 30, lyY + 6, U32(curLyr and ac or C.sub),
-    ellipsize(curLyr or 'Belum ada lirik aktif — klik di sini untuk membuka tab Lirik', rw - 42, 'stlyr1'))
+    ellipsize(curLyr or 'Belum ada lirik aktif â€” klik di sini untuk membuka tab Lirik', rw - 42, 'stlyr1'))
   T(dl, p.x + rx + 30, lyY + 25, U32(C.sub, 0.78),
     ellipsize(nextLyr or (S.lyrics and S.lyrics.source or 'Lirik tersinkronisasi otomatis dari YouTube Music & LRCLIB'), rw - 42, 'stlyr2'))
   popFont(fs2)
@@ -4059,7 +4101,7 @@ ui.drawLyrics = function(w, h)
   T(dl, p.x + 72, p.y + 12, U32(C.text), ellipsize(title, w - 380, 'lytitle'))
   popFont(fb)
   local fs = pushFont('small')
-  T(dl, p.x + 72, p.y + 35, U32(C.sub), ellipsize(artist .. '  ·  Klik baris lirik untuk melompat ke waktu tersebut', w - 380, 'lyartist'))
+  T(dl, p.x + 72, p.y + 35, U32(C.sub), ellipsize(artist .. '  Â·  Klik baris lirik untuk melompat ke waktu tersebut', w - 380, 'lyartist'))
 
   if S.lyrics and S.lyrics.timed then
     local ox = w - 36 - 230
@@ -4180,7 +4222,7 @@ ui.drawStudioFX = function(w, h)
   local cw = bodyW - 14
 
   local fs = pushFont('small')
-  T(dl, p.x + 6, oy + 2, U32(C.sub), 'Preset Karakter Suara  (Putar Scroll Mouse pada slider untuk presisi ±1, Klik Kanan untuk reset)')
+  T(dl, p.x + 6, oy + 2, U32(C.sub), 'Preset Karakter Suara  (Putar Scroll Mouse pada slider untuk presisi Â±1, Klik Kanan untuk reset)')
   popFont(fs)
 
   local gap = 8
@@ -4309,7 +4351,7 @@ ui.drawStudioFX = function(w, h)
   T(dl, p.x + lx + 16, oy + memY + 7, U32(C.text), 'Memori Custom A')
   local fsm = pushFont('small')
   T(dl, p.x + lx + 16, oy + memY + 29, U32(C.sub),
-    string.format('EQ %+d/%+d/%+d · %d%% · Rev %d%%', cfg.main.c1Bass or 0, cfg.main.c1Mid or 0, cfg.main.c1Treble or 0, cfg.main.c1Speed or 100, cfg.main.c1Reverb or 0))
+    string.format('EQ %+d/%+d/%+d Â· %d%% Â· Rev %d%%', cfg.main.c1Bass or 0, cfg.main.c1Mid or 0, cfg.main.c1Treble or 0, cfg.main.c1Speed or 100, cfg.main.c1Reverb or 0))
   if ui.pill('##c1_load', 'Muat A', lx + halfW - 146, memY + 13, 64, 28, true) then loadCustomFxSlot(1) end
   if ui.pill('##c1_save', 'Simpan', lx + halfW - 76, memY + 13, 64, 28, false) then saveCustomFxSlot(1) end
 
@@ -4318,7 +4360,7 @@ ui.drawStudioFX = function(w, h)
   T(dl, p.x + rx + 16, oy + memY + 7, U32(C.text), 'Memori Custom B')
   local fsm2 = pushFont('small')
   T(dl, p.x + rx + 16, oy + memY + 29, U32(C.sub),
-    string.format('EQ %+d/%+d/%+d · %d%% · Rev %d%%', cfg.main.c2Bass or 0, cfg.main.c2Mid or 0, cfg.main.c2Treble or 0, cfg.main.c2Speed or 100, cfg.main.c2Reverb or 0))
+    string.format('EQ %+d/%+d/%+d Â· %d%% Â· Rev %d%%', cfg.main.c2Bass or 0, cfg.main.c2Mid or 0, cfg.main.c2Treble or 0, cfg.main.c2Speed or 100, cfg.main.c2Reverb or 0))
   if ui.pill('##c2_load', 'Muat B', rx + halfW - 146, memY + 13, 64, 28, true) then loadCustomFxSlot(2) end
   if ui.pill('##c2_save', 'Simpan', rx + halfW - 76, memY + 13, 64, 28, false) then saveCustomFxSlot(2) end
   popFont(fsm2)
@@ -4365,17 +4407,17 @@ end
 -- ======================================================================
 ui.drawLibrary = function(w, h)
   local view = ui.getLibView()
-  local bridgeBadge = YT.online and ('Bridge ONLINE · ' .. #lib .. ' Lagu') or 'Bridge Standby'
+  local bridgeBadge = YT.online and ('Bridge ONLINE Â· ' .. #lib .. ' Lagu') or 'Bridge Standby'
   local sub
   if YT.searching then
     sub = 'Sedang mencari "' .. (YT.searchQuery or '') .. '" di YouTube Music...'
   elseif S.loading then
     local el = math.max(0, os.clock() - (S.loadAt or os.clock()))
-    sub = string.format('Memuat audio (%.1fs) · %s', el, S.loadStatus ~= '' and S.loadStatus or 'Menghubungkan ke YouTube Music...')
+    sub = string.format('Memuat audio (%.1fs) Â· %s', el, S.loadStatus ~= '' and S.loadStatus or 'Menghubungkan ke YouTube Music...')
   elseif YT.showSearchOnly and #YT.searchResults > 0 then
-    sub = string.format('Menampilkan %d hasil pencarian YouTube Music untuk "%s"  ·  Klik lagu untuk langsung memutar', #view, YT.searchQuery or '')
+    sub = string.format('Menampilkan %d hasil pencarian YouTube Music untuk "%s"  Â·  Klik lagu untuk langsung memutar', #view, YT.searchQuery or '')
   else
-    sub = #view .. ' ditampilkan dari ' .. #lib .. ' lagu di katalog  ·  Ketik judul lagu di bawah untuk mencari di YouTube Music'
+    sub = #view .. ' ditampilkan dari ' .. #lib .. ' lagu di katalog  Â·  Ketik judul lagu di bawah untuk mencari di YouTube Music'
   end
   ui.header('Pencarian & Katalog YouTube Music', sub, bridgeBadge)
 
@@ -4817,7 +4859,7 @@ ui.drawSettings = function(w, h)
   local sname = MINI.SNAMES[cfg.main.miniScale] or MINI.SNAMES[2]
   local stName = MINI.STYLES[cfg.main.miniStyle or 1] or MINI.STYLES[1]
   ui.settingRow(y, w, 'Mini Player HUD: ' .. stName,
-    'Posisi: ' .. (custom and 'Bebas (Custom)' or (MINI.POS[cfg.main.miniPos] or MINI.POS[1])) .. '  ·  Ukuran: ' .. sname, 360)
+    'Posisi: ' .. (custom and 'Bebas (Custom)' or (MINI.POS[cfg.main.miniPos] or MINI.POS[1])) .. '  Â·  Ukuran: ' .. sname, 360)
   if ui.toggle('##tg_mini', rx - 44, y + 16, cfg.main.mini) then
     cfg.main.mini = not cfg.main.mini
     cfgDirty = true
@@ -4977,7 +5019,7 @@ ui.drawSettings = function(w, h)
   ui.bindPill('##bk_fav', 'Favorit', 'keyFav', rx - 130, y + 10, 130)
   y = y + 60
 
-  ui.settingRow(y, w, 'Hotkey Volume Cepat & Karaoke HUD', 'Naik/turunkan volume ±5% atau nyalakan Karaoke langsung dari dalam game', 420)
+  ui.settingRow(y, w, 'Hotkey Volume Cepat & Karaoke HUD', 'Naik/turunkan volume Â±5% atau nyalakan Karaoke langsung dari dalam game', 420)
   ui.bindPill('##bk_vup', 'Vol +5%', 'keyVolUp', rx - 130 * 3 - 16, y + 10, 130)
   ui.bindPill('##bk_vdn', 'Vol -5%', 'keyVolDn', rx - 130 * 2 - 8, y + 10, 130)
   ui.bindPill('##bk_kar', 'Karaoke', 'keyKaraoke', rx - 130, y + 10, 130)
@@ -5079,7 +5121,7 @@ end
 ui.drawHome = function(w, h)
   local sesMins = math.max(1, math.floor((os.clock() - XT.sesStart) / 60))
   local homeStatus = YT.homeLoading and 'Memuat rekomendasi terbaru dari YouTube Music...'
-    or (string.format('%d lagu di Katalog  ·  %d diputar sesi ini (%d mnt)', #lib, XT.sesSongs, sesMins))
+    or (string.format('%d lagu di Katalog  Â·  %d diputar sesi ini (%d mnt)', #lib, XT.sesSongs, sesMins))
   ui.header('Beranda YouTube Music', homeStatus, nil, 232)
   if ui.pill('##ytrefresh', YT.homeLoading and 'Memuat...' or 'Segarkan YT', w - 236, 18, 106, 30, true) then
     local seedTr = S.cur or (#recentTracks > 0 and recentTracks[1]) or (#lib > 0 and lib[1]) or nil
@@ -5106,7 +5148,7 @@ ui.drawHome = function(w, h)
   local heroTextW = math.max(140, heroBtnX - 132)
   ui.drawPlayerArt(dl, hp.x + 60, hp.y + 62, 44, getArtTexture(S.cur), ui.vinylAngle, ac, false)
   local fsHero = pushFont('small')
-  local fxBadge = (cfg.main.fxPreset and cfg.main.fxPreset > 1) and ('  ·  FX: ' .. FX_PRESETS[cfg.main.fxPreset].name) or ''
+  local fxBadge = (cfg.main.fxPreset and cfg.main.fxPreset > 1) and ('  Â·  FX: ' .. FX_PRESETS[cfg.main.fxPreset].name) or ''
   if S.loading then
     ui.drawSpinner(dl, hp.x + 126, hp.y + 23, 5.5, U32(C.gold), 1.8)
     T(dl, hp.x + 138, hp.y + 15, U32(C.gold), 'Sedang Menyiapkan Stream YouTube Music...')
@@ -5202,7 +5244,7 @@ ui.drawHome = function(w, h)
         local el = math.max(0, os.clock() - (S.loadAt or os.clock()))
         T(dl, a.x + 56, a.y + 29, U32(C.gold), ellipsize(string.format('Memuat (%.1fs)...', el), rW - 66, 'shl'))
       else
-        local subInfo = (tr.artist or 'YouTube Music') .. ((tr.durStr and tr.durStr ~= '') and ('  ·  ' .. tr.durStr) or '')
+        local subInfo = (tr.artist or 'YouTube Music') .. ((tr.durStr and tr.durStr ~= '') and ('  Â·  ' .. tr.durStr) or '')
         T(dl, a.x + 56, a.y + 29, U32(C.sub), ellipsize(subInfo, rW - 66, 'sha' .. secKey))
       end
       popFont(fs)
@@ -5327,7 +5369,7 @@ ui.drawPlaylists = function(w, h)
   local allp = FP.all()
   local nsel = 0
   for _, pl in ipairs(allp) do if ui.plSel[pl] then nsel = nsel + 1 end end
-  ui.header('Playlists & Multi-Mixer', #allp .. ' playlist tersedia  ·  ' .. nsel .. ' dicentang untuk digabung', nsel .. ' Selected')
+  ui.header('Playlists & Multi-Mixer', #allp .. ' playlist tersedia  Â·  ' .. nsel .. ' dicentang untuk digabung', nsel .. ' Selected')
 
   ui.styledInput('##plname', 'Nama playlist baru / ganti nama', ui.plName, 22, 80, 210)
   local nm = cleanName(ffi.string(ui.plName))
@@ -5776,7 +5818,7 @@ ui.drawRightDrawer = function(w, h)
       end
       y = y + 34
     end
-    T(fdl, fp.x + 4, foy + y + 2, U32(C.sub), string.format('Speed: %d%%  ·  Bass: %+d dB', cfg.main.speed or 100, cfg.main.eqBass or 0))
+    T(fdl, fp.x + 4, foy + y + 2, U32(C.sub), string.format('Speed: %d%%  Â·  Bass: %+d dB', cfg.main.speed or 100, cfg.main.eqBass or 0))
     popFont(fs)
     if ui.pill('##drfx_more', 'Studio FX Lengkap', 4, y + 26, w - 32, 30, true) then ui.tab = 7 end
     imgui.SetCursorPos(V2(0, y + 66))
@@ -5792,7 +5834,7 @@ ui.drawTransportDock = function(w, h)
   local ac = accent()
   local title, artist = nowInfo()
 
-  -- Top Row of Dock: Full-Width Interactive Seek Bar (Scroll Wheel = ±5s) + Indikator Loading
+  -- Top Row of Dock: Full-Width Interactive Seek Bar (Scroll Wheel = Â±5s) + Indikator Loading
   local sx = 64
   local sw = w - 128
   local sy = 6
@@ -5907,7 +5949,7 @@ ui.drawTransportDock = function(w, h)
     flash(rNames[cfg.main.repeatMode])
   end
 
-  -- Right: Quick FX Cycler + Volume Slider (Scroll Wheel = ±3%)
+  -- Right: Quick FX Cycler + Volume Slider (Scroll Wheel = Â±3%)
   local rx = w - 296
   local fxp = FX_PRESETS[cfg.main.fxPreset or 1] or FX_PRESETS[1]
   if rx > cx + 118 then
@@ -5953,7 +5995,7 @@ ui.drawCompactDeck = function(w, h)
   end
 
   local fs = pushFont('small')
-  T(dl, wp.x + 20, wp.y + 15, U32(C.sub), 'MoonRadio Compact Deck  ·  Seret untuk pindah')
+  T(dl, wp.x + 20, wp.y + 15, U32(C.sub), 'MoonRadio Compact Deck  Â·  Seret untuk pindah')
   popFont(fs)
 
   if ui.iconBtn('##comp_exp', w - 54, 24, 14, 'expand', false, 9.5) then
@@ -6072,11 +6114,22 @@ imgui.OnInitialize(function()
   io.IniFilename = nil
   local ranges = io.Fonts:GetGlyphRangesCyrillic()
   local win = os.getenv('SystemRoot') or 'C:\\Windows'
-  local reg, bold = win .. '\\Fonts\\segoeui.ttf', win .. '\\Fonts\\segoeuib.ttf'
-  if doesFileExist(reg) then
+  local fdir = win .. '\\Fonts\\'
+  local function firstFont(list)
+    for _, n in ipairs(list) do
+      if doesFileExist(fdir .. n) then return fdir .. n end
+    end
+    if XT.fontFallbackDir and doesFileExist(XT.fontFallbackDir .. '\\trebucbd.ttf') then
+      return XT.fontFallbackDir .. '\\trebucbd.ttf'
+    end
+    return nil
+  end
+  local reg = firstFont({ 'segoeui.ttf', 'arial.ttf', 'tahoma.ttf', 'verdana.ttf', 'calibri.ttf' })
+  local bold = firstFont({ 'segoeuib.ttf', 'arialbd.ttf', 'tahomabd.ttf', 'verdanab.ttf', 'calibrib.ttf' }) or reg
+  if reg then
     fonts.reg = io.Fonts:AddFontFromFileTTF(reg, 17, nil, ranges)
     fonts.small = io.Fonts:AddFontFromFileTTF(reg, 14, nil, ranges)
-    if doesFileExist(bold) then
+    if bold then
       fonts.bold = io.Fonts:AddFontFromFileTTF(bold, 18, nil, ranges)
       fonts.title = io.Fonts:AddFontFromFileTTF(bold, 25, nil, ranges)
     end
@@ -6650,7 +6703,7 @@ end, function(self)
       local maxw = (x1 - 54 * k) - tx
       local fade = U32(C.side, 0.92)
       local fs = pushFont('small')
-      MINI.miniMarquee(dl, tx, y0 + (CH - 16 * k) / 2, maxw, U32(C.text), title .. '  ·  ' .. artist, now - MINI.t0, fade, k)
+      MINI.miniMarquee(dl, tx, y0 + (CH - 16 * k) / 2, maxw, U32(C.text), title .. '  Â·  ' .. artist, now - MINI.t0, fade, k)
       T(dl, x1 - 46 * k, y0 + (CH - 16 * k) / 2, U32(ac), S.live and 'LIVE' or fmtTime(S.pos))
       popFont(fs)
       dl:AddRectFilled(V2(x0 + R, y1 - 2.5 * k), V2(x0 + R + (CW - 2 * R) * MINI.sp, y1 - 1 * k), U32(ac), 1, 15)
@@ -6863,7 +6916,7 @@ function main()
     sampRegisterChatCommand('rplay', function(arg)
       local q = trim(tostring(arg or ''))
       if q == '' then
-        chat('Pemakaian: /rplay [judul lagu / artis] — langsung streaming dari YouTube Music!')
+        chat('Pemakaian: /rplay [judul lagu / artis] â€” langsung streaming dari YouTube Music!')
         return
       end
       ffi.fill(ui.search, ffi.sizeof(ui.search))
@@ -6875,7 +6928,7 @@ function main()
     sampRegisterChatCommand('ryt', function(arg)
       local q = trim(tostring(arg or ''))
       if q == '' then
-        chat('Pemakaian: /ryt [judul lagu / artis] — langsung streaming dari YouTube Music!')
+        chat('Pemakaian: /ryt [judul lagu / artis] â€” langsung streaming dari YouTube Music!')
         return
       end
       ffi.fill(ui.search, ffi.sizeof(ui.search))

@@ -91,6 +91,31 @@ BYTES_PER_SEC = (STREAM_BITRATE_KBPS * 1000) // 8  # 24.000 byte/detik (CBR 192k
 PREBUFFER_BYTES = 16384  # 16 KB (~0.68 detik audio) — sinkron dengan BASS_CONFIG_NET_PREBUF 15%
 MAX_RAM_SESSIONS = 4     # Maksimal lagu di buffer RAM (hemat RAM laptop)
 URL_CACHE_TTL = 2400     # Cache URL stream yt-dlp selama 40 menit
+CACHE_DIR = os.path.join(toolchain.APP_DIR, "cache")
+MAX_DISK_CACHE_FILES = 60  # Simpan hingga 60 lagu terakhir di disk (~180 MB LRU) agar putar ulang 0.01 detik
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _prune_disk_cache():
+    """Hapus file cache MP3 terlama bila jumlahnya melebihi MAX_DISK_CACHE_FILES."""
+    try:
+        files = []
+        for fn in os.listdir(CACHE_DIR):
+            if fn.endswith(".mp3"):
+                fp = os.path.join(CACHE_DIR, fn)
+                try:
+                    files.append((os.path.getatime(fp), fp))
+                except OSError:
+                    pass
+        if len(files) > MAX_DISK_CACHE_FILES:
+            files.sort(key=lambda x: x[0])
+            for _, fp in files[: len(files) - MAX_DISK_CACHE_FILES]:
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 def get_bridge_dirs() -> list[str]:
@@ -246,6 +271,7 @@ class StreamSession:
         user_agent: str | None,
         start_sec: float = 0.0,
         ffmpeg_bin: str | None = None,
+        cache_file: str | None = None,
     ):
         self.session_id = session_id
         self.video_id = video_id
@@ -253,6 +279,7 @@ class StreamSession:
         self.user_agent = user_agent
         self.start_sec = max(0.0, float(start_sec or 0.0))
         self.ffmpeg_bin = ffmpeg_bin or toolchain.find_tool("ffmpeg")
+        self.cache_file = cache_file
 
         self.data = bytearray()
         self.cond = threading.Condition()
@@ -282,6 +309,17 @@ class StreamSession:
 
     def _worker(self):
         try:
+            # Jalur Cepat 0.01s: Muat langsung dari Disk Cache bila lagu pernah diputar
+            if self.cache_file and os.path.isfile(self.cache_file):
+                with open(self.cache_file, "rb") as cf:
+                    raw_mp3 = cf.read()
+                if raw_mp3:
+                    with self.cond:
+                        self.data.extend(raw_mp3)
+                        self.ready_event.set()
+                        self.cond.notify_all()
+                    return
+
             if self.ffmpeg_bin:
                 cmd = [
                     self.ffmpeg_bin,
@@ -376,6 +414,24 @@ class StreamSession:
                     except Exception:
                         pass
                 self.error = err_out[:120] if err_out else "Stream audio kosong dari YouTube"
+            elif (
+                not self.aborted
+                and not self.error
+                and not self.cache_file
+                and self.start_sec < 0.25
+                and len(self.data) > 65536
+                and re.fullmatch(r"[A-Za-z0-9_-]{6,20}", self.video_id or "")
+            ):
+                # Simpan otomatis hasil transcode utuh ke disk cache agar pemutaran berikutnya instan (0.01s)
+                try:
+                    cpath = os.path.join(CACHE_DIR, f"{self.video_id}.mp3")
+                    tmp_cpath = f"{cpath}.tmp.{threading.get_ident()}"
+                    with open(tmp_cpath, "wb") as cf:
+                        cf.write(self.data)
+                    os.replace(tmp_cpath, cpath)
+                    _prune_disk_cache()
+                except Exception:
+                    pass
         except Exception as e:
             if not self.aborted:
                 self.error = str(e)
@@ -536,14 +592,14 @@ class MoonRadioBridge:
         }
 
     # ---------- Resolusi URL Stream Audio ----------
-    def resolve_stream_info(self, video_id: str) -> dict:
+    def resolve_stream_info(self, video_id: str, title: str = "", artist: str = "") -> dict:
         now = time.time()
         with self.lock:
             cached = self.url_cache.get(video_id)
             if cached and cached.get("url") and (now - cached.get("ts", 0) < URL_CACHE_TTL):
                 return cached
 
-        url, ua, dur, thumb = ambil_url_audio(video_id)
+        url, ua, dur, thumb = ambil_url_audio(video_id, title=title, artist=artist)
         with self.lock:
             entry = self.url_cache.setdefault(video_id, {})
             entry.update({
@@ -753,16 +809,6 @@ class MoonRadioBridge:
                     f"PL\t{pl['playlistId']}\t{pl['title']}\t{pl['sub']}\t{pl['shelf']}\t{pl['artKey']}"
                 )
             self.write_ipc_file("resp_home.txt", "\n".join(lines) + "\n")
-
-            # Sinkronkan juga ke katalog utama bila baru booting
-            if all_tracks:
-                s_lines = [f"OK|{seq}|discover|{len(all_tracks)}|Beranda YouTube Music"]
-                for t in all_tracks:
-                    s_lines.append(
-                        f"{t['videoId']}\t{t['title']}\t{t['artist']}\t{t['album']}\t{t['durSec']}\t{t['durStr']}"
-                    )
-                self.write_ipc_file("resp_search.txt", "\n".join(s_lines) + "\n")
-
             self.prefetch_arts_batch(art_queue)
             print(f"🏠 [YT Music Home] {len(all_tracks)} lagu & {len(playlists_out)} playlist kurasi dimuat")
         except Exception as e:
@@ -799,7 +845,7 @@ class MoonRadioBridge:
         try:
             self._ensure_cover_art(vid)
             self._ensure_lyrics(vid, title or vid, artist or "YouTube Music")
-            self.resolve_stream_info(vid)
+            self.resolve_stream_info(vid, title=title, artist=artist)
             print(f"⚡ [Prefetch Ready] {title} ({vid})")
         except Exception:
             pass
@@ -917,6 +963,42 @@ class MoonRadioBridge:
                     print(f"⚡ [RAM Instant Seek/Play] {title} ({start_sec:.1f}s)")
                     return
 
+            # 2.5. Cek Disk Cache MP3 lokal (0.01 detik tanpa kuota/yt-dlp/FFmpeg bila lagu pernah diputar)
+            cache_file_path = os.path.join(CACHE_DIR, f"{video_id}.mp3")
+            if os.path.isfile(cache_file_path) and os.path.getsize(cache_file_path) > 65536:
+                try:
+                    os.utime(cache_file_path, None)
+                except OSError:
+                    pass
+                session_id = f"{video_id}_disk_{int(time.time() * 1000) % 100000}"
+                sess = StreamSession(
+                    session_id=session_id,
+                    video_id=video_id,
+                    audio_url="",
+                    user_agent=None,
+                    start_sec=0.0,
+                    ffmpeg_bin=self.ffmpeg_bin,
+                    cache_file=cache_file_path,
+                )
+                with self.lock:
+                    self._evict_old_sessions_locked()
+                    self.sessions[session_id] = sess
+                    self.video_base_session[video_id] = session_id
+                sess.start()
+                sess.ready_event.wait(timeout=2.0)
+                if len(sess.data) > 0:
+                    dur = self.url_cache.get(video_id, {}).get("dur", 0) or max(1, len(sess.data) // BYTES_PER_SEC)
+                    stream_url = (
+                        f"http://127.0.0.1:{BRIDGE_PORT}/stream/{session_id}.mp3"
+                        f"?start={start_sec:.2f}&seq={seq}"
+                    )
+                    self.write_ipc_file(
+                        "resp_stream.txt",
+                        f"READY|{seq}|{video_id}|{stream_url}|{dur}|{start_sec:.2f}\n",
+                    )
+                    print(f"⚡ [Disk Cache Instant Play] {title} ({start_sec:.1f}s)")
+                    return
+
             # 3. Beri status progres bertahap ke UI Lua agar pemain tahu proses yang sedang berjalan
             with self.lock:
                 has_cached_url = bool(
@@ -929,7 +1011,7 @@ class MoonRadioBridge:
                     f"PROGRESS|{seq}|{video_id}|[1/2] Mengambil link audio dari YouTube Music...\n",
                 )
 
-            info = self.resolve_stream_info(video_id)
+            info = self.resolve_stream_info(video_id, title=title, artist=artist)
             audio_url = info["url"]
             ua = info.get("ua")
             dur = int(info.get("dur") or 0)
@@ -974,8 +1056,14 @@ class MoonRadioBridge:
             print(f"❌ [Stream Error] {video_id}: {e}")
 
     # ---------- Handler Lirik (.LRC) & Cover Art ----------
-    def fetch_metadata_assets(self, seq: str, video_id: str, title: str, artist: str):
+    def fetch_metadata_assets(self, seq: str, video_id: str, title: str, artist: str, art_only: bool = False):
         has_art = self._ensure_cover_art(video_id)
+        if art_only:
+            self.write_ipc_file(
+                "resp_meta.txt",
+                f"META|{seq}|{video_id}|{1 if has_art else 0}|0|Art Only\n",
+            )
+            return
         has_lrc, lyr_src = self._ensure_lyrics(video_id, title, artist)
         self.write_ipc_file(
             "resp_meta.txt",
@@ -1170,9 +1258,13 @@ class MoonRadioBridge:
                 parts = raw_meta.split("|", 4)
                 if len(parts) >= 4:
                     seq, video_id, title, artist = parts[0], parts[1], parts[2], parts[3]
+                    art_only = (len(parts) >= 5 and parts[4].strip() == "1")
                     if seq and seq != self.last_cmd_seq["meta"]:
                         self.last_cmd_seq["meta"] = seq
-                        self.executor.submit(self.fetch_metadata_assets, seq, video_id, title, artist)
+                        if art_only:
+                            self.art_executor.submit(self.fetch_metadata_assets, seq, video_id, title, artist, True)
+                        else:
+                            self.executor.submit(self.fetch_metadata_assets, seq, video_id, title, artist, False)
 
             time.sleep(0.05)
 
