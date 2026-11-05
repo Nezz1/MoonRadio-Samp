@@ -55,8 +55,7 @@ script_description('MoonRadio Zenith v4.0 YouTube Music Edition: Direct YT Music
     /rkaraoke       - Toggle Floating Desktop Karaoke Lyrics di layar game
     /rfx [0-7]      - Ganti preset Studio Audio FX (Normal/BassBoost/Vocal/Nightcore/Slowed/LoFi/Hall)
     /rspeed [50-150]- Atur kecepatan & pitch lagu (50% - 150%)
-    /rsmart         - Toggle Smart Shuffle Pintar (Anti-Tabrakan Genre/Mood)
-    /rautomix       - Toggle Auto Smart Mix saat pilih lagu tanpa playlist
+    /rautomix       - Toggle Radio Lanjutan (Auto Mix) saat pilih lagu
 ]]
 
 require 'lib.moonloader'
@@ -101,12 +100,8 @@ local cfg = inicfg.load({
     c2Bass = 4, c2Mid = -1, c2Treble = -2, c2Speed = 88, c2Reverb = 45, c2Pan = 0,
     smoothFade = true,
     carDuck = false, carBoost = 20,
-    -- Smart Shuffle & Auto Mix
-    smartShuffle = true,
-    smartAvoidClash = true,
+    -- Radio Lanjutan (Auto Mix) & Tampilan
     autoMix = true,
-    autoMixLooseOnly = false,
-    autoMixCount = 30,
     showVibeBadge = true,
     lyricAutoScroll = true,
     -- Expanded Free Hotkeys (9 Slots)
@@ -130,8 +125,7 @@ local DEFAULTS = {
   c1Bass = 6, c1Mid = 2, c1Treble = 4, c1Speed = 100, c1Reverb = 15, c1Pan = 0,
   c2Bass = 4, c2Mid = -1, c2Treble = -2, c2Speed = 88, c2Reverb = 45, c2Pan = 0,
   smoothFade = true, carDuck = false, carBoost = 20,
-  smartShuffle = true, smartAvoidClash = true,
-  autoMix = true, autoMixLooseOnly = false, autoMixCount = 30,
+  autoMix = true,
   showVibeBadge = true, lyricAutoScroll = true,
   keyNext = 176, keyPrev = 177, keyPause = 179,
   keyFav = 0, keyKaraoke = 0, keyCompact = 0, keyVolUp = 0, keyVolDn = 0
@@ -1334,67 +1328,6 @@ SMART.setTrackVibe = function(t, vibeId)
   end
 end
 
--- Hitung skor kecocokan transisi dari lagu `cur` ke kandidat `cand`
-SMART.scoreTransition = function(cur, cand, prevArtistKey)
-  if not cur or not cand then return 0 end
-  if cur == cand then return -999 end
-  local p1 = SMART.getProfile(cur)
-  local p2 = SMART.getProfile(cand)
-
-  local row = SMART.VIBE_MATRIX[p1.vibe] or SMART.VIBE_MATRIX.general
-  local score = (row and row[p2.vibe]) or 0
-
-  -- Jika proteksi ketat anti-lompat genre aktif, perkuat penalti untuk genre yang bertolak belakang
-  if cfg.main.smartAvoidClash and score <= -35 then
-    score = score * 1.8
-  end
-
-  -- Bonus kesamaan sub-vibe sekunder
-  for k, v1 in pairs(p1.scores) do
-    local v2 = p2.scores[k] or 0
-    if v1 > 0 and v2 > 0 then
-      score = score + math.min(22, (v1 + v2) * 2.5)
-    end
-  end
-
-  -- Kesamaan Folder / Playlist asal
-  if p1.groupKey and p1.groupKey == p2.groupKey then
-    score = score + 28
-  end
-  for plIdx, _ in pairs(p1.pls) do
-    if p2.pls[plIdx] then
-      score = score + 26
-      break
-    end
-  end
-
-  -- Kesamaan Genre ID3
-  if p1.genreKey and p1.genreKey == p2.genreKey then
-    score = score + 22
-  end
-
-  -- Kesamaan Artis (dengan anti-clumping ringan bila lagu sebelumnya sudah artis yang sama)
-  if p1.artistKey and p1.artistKey == p2.artistKey then
-    if prevArtistKey and prevArtistKey == p2.artistKey then
-      score = score + 8
-    else
-      score = score + 26
-    end
-  end
-
-  -- Kemiripan kata kunci judul / kolaborator / seri
-  local tokMatches = 0
-  for w, _ in pairs(p1.tokens) do
-    if p2.tokens[w] then
-      tokMatches = tokMatches + 1
-      if tokMatches >= 4 then break end
-    end
-  end
-  score = score + tokMatches * 6
-
-  return score
-end
-
 -- ======================================================================
 -- PLAYER & STUDIO AUDIO FX ENGINE (OPTIMIZED ZERO-ALLOC FFI)
 -- ======================================================================
@@ -1431,104 +1364,43 @@ S = {
   peakL = 0, peakR = 0, bassPulse = 0, lastFftAt = 0, lastBarFrame = 0
 }
 
+-- Shuffle merata & benar (Fisher-Yates): bangun permutasi acak seluruh indeks lalu
+-- putar semuanya tepat satu kali tanpa pengulangan; kocok ulang hanya saat antrean habis.
+-- Jika lagu yang sedang diputar diganti secara manual (klik/pilih), kocok ulang agar
+-- lagu yang baru saja diputar tidak langsung muncul lagi.
 S.pick = function(list, n, cur)
   local b = S.bag
-  if not b or b.list ~= list or b.n ~= n or b.ver ~= libVersion then
-    b = { list = list, n = n, ver = libVersion, pos = 0, order = {} }
+  if not b or b.list ~= list or b.n ~= n then
+    b = { list = list, n = n, pos = 0, order = {}, lastServed = nil }
+    S.bag = b
+  end
+  if b.lastServed and cur ~= b.lastServed then
+    b = { list = list, n = n, pos = 0, order = {}, lastServed = nil }
     S.bag = b
   end
   if b.pos >= #b.order then
     local o = {}
-    for i = 1, n do if i ~= cur then o[#o + 1] = i end end
+    for i = 1, n do
+      if i ~= cur then o[#o + 1] = i end
+    end
     shuffleInPlace(o)
     b.order, b.pos = o, 0
   end
   b.pos = b.pos + 1
-  return b.order[b.pos]
+  b.lastServed = b.order[b.pos]
+  return b.lastServed
 end
 
--- Smart Shuffle Picker: memilih lagu berikutnya yang paling se-vibe tanpa mengulang lagu
+-- (Dipusatkan) Pemilihan lagu berikutnya saat shuffle kini memakai satu mesin shuffle
+-- yang sama (S.pick) agar hasilnya konsisten, merata, dan tanpa pengulangan.
 SMART.pickNext = function(list, n, curIdx)
-  if n <= 1 then return 1 end
-  local curTrack = list[curIdx] or S.cur
-  if not curTrack or curTrack.url or not cfg.main.smartShuffle then
-    return S.pick(list, n, curIdx)
-  end
-
-  local sb = S.smartBag
-  if not sb or sb.list ~= list or sb.n ~= n or sb.ver ~= libVersion then
-    sb = { list = list, n = n, ver = libVersion, played = {}, count = 0, lastArtist = nil }
-    S.smartBag = sb
-  end
-  if curIdx and curIdx > 0 and not sb.played[curIdx] then
-    sb.played[curIdx] = true
-    sb.count = sb.count + 1
-  end
-  if sb.count >= n then
-    sb.played = {}
-    sb.count = 0
-    if curIdx and curIdx > 0 then sb.played[curIdx] = true; sb.count = 1 end
-  end
-
-  local cands = {}
-  local minAccept = cfg.main.smartAvoidClash and -15 or -60
-
-  local function collectCands(ignorePlayed, minScore)
-    local out = {}
-    for i = 1, n do
-      if i ~= curIdx and (ignorePlayed or not sb.played[i]) then
-        local sc = SMART.scoreTransition(curTrack, list[i], sb.lastArtist)
-        if sc >= minScore then
-          out[#out + 1] = { idx = i, score = sc + math.random() * 14 }
-        end
-      end
-    end
-    return out
-  end
-
-  -- 1. Cari lagu yang belum diputar dan tidak tabrakan mood
-  cands = collectCands(false, minAccept)
-  -- 2. Jika semua lagu se-vibe sudah habis diputar dan sisa antrean hanya lagu beda genre (mis. Dangdut saat lagi Sad),
-  --    reset memori khusus lagu se-vibe agar tidak terpaksa loncat ke Dangdut!
-  if #cands == 0 and cfg.main.smartAvoidClash then
-    cands = collectCands(true, 10)
-    if #cands > 0 then
-      sb.played = {}
-      sb.count = 0
-      if curIdx and curIdx > 0 then sb.played[curIdx] = true; sb.count = 1 end
-    end
-  end
-  -- 3. Fallback bila seluruh list memang satu jenis atau koleksi sangat kecil
-  if #cands == 0 then
-    cands = collectCands(false, -9999)
-  end
-  if #cands == 0 then
-    return S.pick(list, n, curIdx)
-  end
-
-  table.sort(cands, function(a, b) return a.score > b.score end)
-  local bestScore = cands[1].score
-  local topPool = {}
-  local maxPool = math.min(#cands, math.max(4, math.min(10, math.ceil(#cands * 0.35))))
-  for i = 1, maxPool do
-    if cands[i].score >= bestScore - 28 then
-      topPool[#topPool + 1] = cands[i]
-    end
-  end
-
-  local chosen = topPool[math.random(#topPool)] or cands[1]
-  sb.played[chosen.idx] = true
-  sb.count = sb.count + 1
-  local chosenTrack = list[chosen.idx]
-  sb.lastArtist = chosenTrack and chosenTrack._smart and chosenTrack._smart.artistKey or nil
-  return chosen.idx
+  return S.pick(list, n, curIdx)
 end
 
--- Urutkan array lagu secara acak namun mengalir halus antar mood (Smart Vibe Flow)
+-- Acak daftar secara merata (Fisher-Yates). Jika ada lagu awal (startTrack),
+-- letakkan lagu tersebut di posisi pertama agar pemutaran dimulai darinya.
 SMART.shuffleList = function(a, startTrack)
   shuffleInPlace(a)
-  if not cfg.main.smartShuffle or #a <= 2 then return a end
-
   if startTrack then
     for i = 1, #a do
       if a[i] == startTrack then
@@ -1537,68 +1409,14 @@ SMART.shuffleList = function(a, startTrack)
       end
     end
   end
-
-  local prevArtist = nil
-  for i = 1, #a - 1 do
-    local cur = a[i]
-    local bestJ = i + 1
-    local bestSc = -99999
-    local limit = math.min(#a, i + 36)
-    for j = i + 1, limit do
-      local sc = SMART.scoreTransition(cur, a[j], prevArtist) + math.random() * 10
-      if sc > bestSc then
-        bestSc = sc
-        bestJ = j
-      end
-    end
-    if bestJ ~= i + 1 then
-      a[i + 1], a[bestJ] = a[bestJ], a[i + 1]
-    end
-    local p = SMART.getProfile(a[i])
-    prevArtist = p.artistKey
-  end
   return a
 end
 
--- Buat antrean Smart Mix yang sesuai dengan lagu `seedTrack`
+-- (Dipusatkan) Auto Mix kini memakai Radio YouTube Music berdasarkan lagu seed,
+-- bukan pencocokan kata kunci lokal yang sering meleset.
 SMART.buildMix = function(seedTrack, maxCount)
   if not seedTrack then return {}, SMART.VIBE_MAP.general end
-  local seedProf = SMART.getProfile(seedTrack)
-  local scored = {}
-  local fallback = {}
-
-  for _, t in ipairs(lib) do
-    if t ~= seedTrack then
-      local sc = SMART.scoreTransition(seedTrack, t, nil)
-      local jitter = math.random() * 12
-      if sc >= 0 then
-        scored[#scored + 1] = { track = t, score = sc + jitter }
-      elseif not cfg.main.smartAvoidClash or sc > -35 then
-        fallback[#fallback + 1] = { track = t, score = sc + jitter }
-      end
-    end
-  end
-
-  table.sort(scored, function(a, b) return a.score > b.score end)
-  if #scored < 8 and #fallback > 0 then
-    table.sort(fallback, function(a, b) return a.score > b.score end)
-    for i = 1, math.min(#fallback, 15 - #scored) do
-      scored[#scored + 1] = fallback[i]
-    end
-  end
-
-  local limit = (maxCount and maxCount > 0) and maxCount or #scored + 1
-  local pool = {}
-  for i = 1, math.min(#scored, math.max(limit - 1, 1)) do
-    pool[#pool + 1] = scored[i].track
-  end
-
-  local out = { seedTrack }
-  for i = 1, #pool do out[#out + 1] = pool[i] end
-  if #out > 2 then
-    SMART.shuffleList(out, seedTrack)
-  end
-  return out, seedProf.info
+  return { seedTrack }, SMART.vibeInfo(seedTrack)
 end
 
 
@@ -2080,7 +1898,7 @@ local function playQueue(list, label, startIdx)
   if #list == 0 then flash('Tidak ada lagu untuk diputar', true); return end
   queue = list
   S.queueName = label
-  S.history = {}; S.errChain = 0; S.skipOnErr = true; S.smartBag = nil
+  S.history = {}; S.errChain = 0; S.skipOnErr = true; S.bag = nil; S.smartBag = nil
   local idx = startIdx
   if not idx then idx = (cfg.main.shuffle and #list > 1) and math.random(#list) or 1 end
   playIndex('queue', idx)
@@ -2141,25 +1959,13 @@ end
 
 SMART.playAutoMix = function(seedTrack, customPrefix)
   if not seedTrack then return false end
-  local mix, vInfo = SMART.buildMix(seedTrack, cfg.main.autoMixCount or 30)
-  if #mix < 6 and seedTrack.videoId then
-    YT.requestSearch(seedTrack.videoId .. ';;' .. (seedTrack.title or '') .. ' ' .. (seedTrack.artist or ''), 'automix_append', cfg.main.autoMixCount or 25)
-  end
-  if #mix <= 1 then
-    for idx, lt in ipairs(lib) do
-      if lt == seedTrack then
-        S.history = {}; S.errChain = 0; S.skipOnErr = true
-        return playIndex('lib', idx)
-      end
-    end
-  end
-  queue = mix
-  local prefix = customPrefix or ('Smart Mix [' .. (vInfo and vInfo.short or 'Vibe') .. ']')
-  S.queueName = prefix .. ': ' .. seedTrack.title
-  S.history = {}; S.errChain = 0; S.skipOnErr = true; S.smartBag = nil
+  queue = { seedTrack }
+  S.queueName = (customPrefix or 'Radio') .. ': ' .. seedTrack.title
+  S.history = {}; S.errChain = 0; S.skipOnErr = true
+  S.bag = nil; S.smartBag = nil
   local ok = playIndex('queue', 1)
-  if ok then
-    flash('Auto Mix: ' .. (vInfo and vInfo.name or 'Se-Vibe') .. ' (' .. #mix .. ' lagu)', false, 'Disesuaikan dengan: ' .. seedTrack.title)
+  if seedTrack.videoId then
+    YT.requestSearch(seedTrack.videoId .. ';;' .. (seedTrack.title or '') .. ' ' .. (seedTrack.artist or ''), 'automix_append', 20)
   end
   return ok
 end
@@ -2192,11 +1998,7 @@ nextTrack = function(auto)
   if auto and cfg.main.repeatMode == 2 and isTrackList(S.listName) then return playIndex(S.listName, S.index) end
   local idx
   if cfg.main.shuffle and n > 1 then
-    if cfg.main.smartShuffle and isTrackList(S.listName) then
-      idx = SMART.pickNext(list, n, S.index)
-    else
-      idx = S.pick(list, n, S.index)
-    end
+    idx = S.pick(list, n, S.index)
   else
     idx = S.index + 1
     if idx > n then
@@ -3657,7 +3459,7 @@ ui.drawList = function(listName, list, view, w, h, opts)
       if clicked then
         if opts.onPlay then
           opts.onPlay(idx, t)
-        elseif listName == 'lib' and cfg.main.autoMix and #lib > 1 and (not cfg.main.autoMixLooseOnly or SMART.isLooseTrack(t)) then
+        elseif listName == 'lib' and cfg.main.autoMix and #lib > 1 then
           SMART.playAutoMix(t)
         else
           S.history = {}; S.errChain = 0; S.skipOnErr = (listName == 'lib')
@@ -3727,7 +3529,7 @@ ui.drawList = function(listName, list, view, w, h, opts)
       imgui.Dummy(V2(260, 1))
       imgui.TextColored(V4(ac), tr and ellipsize(tr.title, 250, 'pt') or 'Aksi Lagu')
       imgui.Separator()
-      if tr and imgui.Selectable('Buat Antrean Smart Mix dari Lagu Ini', false) then
+      if tr and imgui.Selectable('Putar & Lanjut Radio (Auto Mix)', false) then
         SMART.playAutoMix(tr)
         imgui.CloseCurrentPopup()
       end
@@ -3744,7 +3546,7 @@ ui.drawList = function(listName, list, view, w, h, opts)
         local curOv = vibeOverrides[relPath(tr.path)]
         local detVibe = SMART.vibeInfo(tr).name
         imgui.TextColored(V4(C.sub), 'Kategori Mood / Vibe (' .. detVibe .. '):')
-        if imgui.BeginMenu('Atur Vibe Lagu (Smart Shuffle)...') then
+        if imgui.BeginMenu('Atur Vibe Lagu (Mood)...') then
           if imgui.MenuItem('Deteksi Otomatis' .. (not curOv and '  [Aktif]' or '')) then
             SMART.setTrackVibe(tr, 'auto')
             imgui.CloseCurrentPopup()
@@ -4714,62 +4516,16 @@ ui.drawSettings = function(w, h)
   y = y + 66
 
   -- ====================================================================
-  -- BAGIAN 1: SMART SHUFFLE & AUTO MIX PINTAR
+  -- BAGIAN 1: PEMUTARAN & ACAK (DIPERMUDAH)
   -- ====================================================================
-  y = ui.settingSection(y, w, 'Smart Shuffle & Auto Mix Pintar')
+  y = ui.settingSection(y, w, 'Pemutaran & Acak')
 
-  ui.settingRow(y, w, 'Smart Shuffle Pintar (Anti-Tabrakan Genre & Mood)',
-    'Cegah perpindahan drastis seperti lagu Sad/Galau tiba-tiba lompat ke Dangdut/DJ', 210)
-  if ui.toggle('##tg_smartshuf', rx - 44, y + 16, cfg.main.smartShuffle) then
-    cfg.main.smartShuffle = not cfg.main.smartShuffle
-    S.smartBag = nil
-    cfgDirty = true
-    flash('Smart Shuffle Pintar: ' .. (cfg.main.smartShuffle and 'AKTIF' or 'MATI'))
-  end
-  if ui.pill('##btn_testsmart', 'Acak Pintar', rx - 44 - 10 - 114, y + 10, 114, 34, false) then
-    if #lib > 0 then
-      local c = {}
-      for i, t in ipairs(lib) do c[i] = t end
-      cfg.main.smartShuffle = true
-      cfg.main.shuffle = true
-      cfgDirty = true
-      SMART.shuffleList(c, S.cur)
-      playQueue(c, 'Smart Shuffle Semua', 1)
-      flash('Antrean Smart Shuffle dimulai (' .. #c .. ' lagu)')
-    else
-      flash('Library masih kosong', true)
-    end
-  end
-  y = y + 60
-
-  ui.settingRow(y, w, 'Proteksi Ketat Anti-Lompat Genre (Strict Mood Guard)',
-    'Blokir penuh lagu yang bertolak belakang (Sad <-> Dangdut / Jedag-Jedug / Metal)', 90)
-  if ui.toggle('##tg_smartclash', rx - 44, y + 16, cfg.main.smartAvoidClash) then
-    cfg.main.smartAvoidClash = not cfg.main.smartAvoidClash
-    S.smartBag = nil
-    cfgDirty = true
-    flash('Strict Mood Guard: ' .. (cfg.main.smartAvoidClash and 'AKTIF' or 'MATI'))
-  end
-  y = y + 60
-
-  local mixCnt = cfg.main.autoMixCount or 30
-  local mixCntLabel = (mixCnt <= 0) and 'Isi: Semua' or ('Isi: ' .. mixCnt .. ' Lagu')
-  ui.settingRow(y, w, 'Auto Mix & Radio Pintar Saat Pilih Lagu',
-    'Otomatis lanjutkan pemutaran dengan lagu se-vibe dari YouTube Music saat antrean habis', 210)
+  ui.settingRow(y, w, 'Radio Lanjutan (Auto Mix)',
+    'Saat antrean habis atau kamu memilih satu lagu, lanjutkan otomatis dengan Radio YouTube Music berdasarkan lagu itu', 210)
   if ui.toggle('##tg_automix', rx - 44, y + 16, cfg.main.autoMix) then
     cfg.main.autoMix = not cfg.main.autoMix
     cfgDirty = true
-    flash('Auto Smart Mix: ' .. (cfg.main.autoMix and 'AKTIF' or 'MATI'))
-  end
-  if ui.pill('##btn_amixcnt', mixCntLabel, rx - 44 - 10 - 118, y + 10, 118, 34, false) then
-    local opts = { 15, 25, 30, 50, 0 }
-    local nxt = 30
-    for i, v in ipairs(opts) do
-      if v == mixCnt then nxt = opts[(i % #opts) + 1]; break end
-    end
-    cfg.main.autoMixCount = nxt
-    cfgDirty = true
-    flash('Ukuran Auto Mix: ' .. (nxt == 0 and 'Semua Lagu Se-Vibe' or (nxt .. ' Lagu')))
+    flash('Radio Lanjutan (Auto Mix): ' .. (cfg.main.autoMix and 'AKTIF' or 'MATI'))
   end
   y = y + 60
 
@@ -4788,7 +4544,7 @@ ui.drawSettings = function(w, h)
   y = ui.settingSection(y, w, 'Kontrol Pemutar & Audio Otomatis')
 
   ui.settingRow(y, w, 'Mode Shuffle (Acak Pemutaran Lagu)',
-    'Acak lagu berikutnya secara otomatis (menggunakan Smart Shuffle bila diaktifkan)', 90)
+    'Acak urutan pemutaran secara merata (Fisher-Yates) tanpa mengulang lagu sampai semua diputar', 90)
   if ui.toggle('##tg_shuf_set', rx - 44, y + 16, cfg.main.shuffle) then
     cfg.main.shuffle = not cfg.main.shuffle
     cfgDirty = true
@@ -5040,7 +4796,7 @@ ui.drawSettings = function(w, h)
   local dl = imgui.GetWindowDrawList()
   local fs = pushFont('small')
   T(dl, p.x + 24, p.y + y - sy, U32(C.sub),
-    'Command: /radio /rplay /ryt /rcari /rcompact /rglass /rnext /rprev /rpause /rvol /rmix /rall /rfav /rsmart /rautomix /rsleep /rmini /rminipos /rministyle /rlyrics /rkaraoke /rfx /rspeed')
+    'Command: /radio /rplay /ryt /rcari /rcompact /rglass /rnext /rprev /rpause /rvol /rmix /rall /rfav /rautomix /rsleep /rmini /rminipos /rministyle /rlyrics /rkaraoke /rfx /rspeed')
   popFont(fs)
   imgui.SetCursorPos(V2(0, y + 32))
   imgui.Dummy(V2(1, 1))
@@ -5082,13 +4838,13 @@ ui.buildRecs = function()
 
   if #lib > 0 then
     mix[#mix + 1] = {
-      title = cfg.main.smartShuffle and 'Smart Shuffle' or 'Acak Semua',
+      title = 'Acak Semua',
       sub = #lib .. ' lagu di Katalog', art = lib[(sd % #lib) + 1], tint = 1,
       onClick = function()
         local c = {}
         for i, t in ipairs(lib) do c[i] = t end
         SMART.shuffleList(c, S.cur)
-        playQueue(c, cfg.main.smartShuffle and 'Smart Shuffle Semua' or 'Shuffle Semua', 1)
+        playQueue(c, 'Shuffle Semua', 1)
       end
     }
     local daily = recs.sample(lib, 30, day * 31 + 7)
@@ -5184,7 +4940,7 @@ ui.drawHome = function(w, h)
     { label = 'YT Radio Pintar', icon = 'dice', fx = nil, act = function()
       local seed = S.cur or (#recentTracks > 0 and recentTracks[1]) or (#lib > 0 and lib[math.random(#lib)])
       if seed and seed.videoId then
-        YT.requestSearch(seed.videoId .. ';;' .. (seed.title or '') .. ' ' .. (seed.artist or ''), 'automix', cfg.main.autoMixCount or 25)
+        YT.requestSearch(seed.videoId .. ';;' .. (seed.title or '') .. ' ' .. (seed.artist or ''), 'automix', 20)
         flash('Menyiapkan Radio Pintar YouTube Music...', false, 'Berdasarkan: ' .. (seed.title or ''))
       else
         YT.requestSearch('', 'discover', 25)
@@ -5661,16 +5417,15 @@ ui.drawRightDrawer = function(w, h)
     T(dl, p.x + 12, p.y + bodyY, U32(C.text), ellipsize(srcLabel .. ' (' .. #lst .. ')', w - 116, 'drq'))
     popFont(fs)
 
-    if #lst > 1 and ui.pill('##dr_shuf', cfg.main.smartShuffle and 'Mix' or 'Acak', w - 98, bodyY - 2, 42, 22, false) then
-      if S.cur and not S.cur.url and cfg.main.autoMix and #lib > 1 then
-        SMART.playAutoMix(S.cur)
-      elseif S.listName ~= 'queue' then
+    if #lst > 1 and ui.pill('##dr_shuf', 'Acak', w - 98, bodyY - 2, 42, 22, false) then
+      if S.listName ~= 'queue' then
         local c = {}
         for i, t in ipairs(lst) do c[i] = t end
         SMART.shuffleList(c, S.cur)
-        playQueue(c, cfg.main.smartShuffle and 'Antrean Smart Shuffle' or 'Antrean Diacak', 1)
+        playQueue(c, 'Antrean Diacak', 1)
       else
         SMART.shuffleList(queue, S.cur)
+        S.bag = nil
         playIndex('queue', 1)
       end
     end
@@ -5911,13 +5666,8 @@ ui.drawTransportDock = function(w, h)
   -- Center: Clean Transport Controls (Tanpa tombol -5s/+5s yang bikin sempit; cukup scroll di seek bar)
   if ui.iconBtn('##shuf', cx - 94, cy, 15, 'shuffle', cfg.main.shuffle, 10.5) then
     cfg.main.shuffle = not cfg.main.shuffle; cfgDirty = true
-    local modeTxt = cfg.main.smartShuffle and 'Smart Shuffle (Se-Vibe)' or 'Shuffle Biasa'
-    flash(modeTxt .. ': ' .. (cfg.main.shuffle and 'ON' or 'OFF'))
-  end
-  if imgui.IsItemHovered() and imgui.IsMouseClicked(1) then
-    cfg.main.smartShuffle = not cfg.main.smartShuffle; cfgDirty = true
-    S.smartBag = nil
-    flash('Smart Shuffle Pintar: ' .. (cfg.main.smartShuffle and 'ON' or 'OFF'), false, 'Klik kanan pada tombol Shuffle')
+    S.bag = nil
+    flash('Shuffle: ' .. (cfg.main.shuffle and 'ON' or 'OFF'))
   end
   if ui.iconBtn('##prev', cx - 50, cy, 16, 'prev', false, 11.5) then prevTrack() end
 
@@ -6988,23 +6738,15 @@ function main()
       local c = {}
       for i, t in ipairs(lib) do c[i] = t end
       SMART.shuffleList(c, S.cur)
-      playQueue(c, cfg.main.smartShuffle and 'Smart Shuffle Semua' or 'Shuffle Semua', 1)
-      chat('Mengacak seluruh koleksi lagu (' .. #lib .. ' lagu' .. (cfg.main.smartShuffle and ', mode Smart Shuffle' or '') .. ')')
-    end)
-    sampRegisterChatCommand('rsmart', function()
-      cfg.main.smartShuffle = not cfg.main.smartShuffle
-      S.smartBag = nil
-      cfgDirty = true
-      local st = cfg.main.smartShuffle and 'AKTIF (Anti-Tabrakan Mood)' or 'MATI (Acak Biasa)'
-      flash('Smart Shuffle: ' .. st)
-      chat('Smart Shuffle Pintar: ' .. st)
+      playQueue(c, 'Shuffle Semua', 1)
+      chat('Mengacak seluruh koleksi lagu (' .. #lib .. ' lagu)')
     end)
     sampRegisterChatCommand('rautomix', function()
       cfg.main.autoMix = not cfg.main.autoMix
       cfgDirty = true
       local st = cfg.main.autoMix and 'AKTIF' or 'MATI'
-      flash('Auto Smart Mix: ' .. st)
-      chat('Auto Smart Mix saat pilih lagu: ' .. st)
+      flash('Radio Lanjutan (Auto Mix): ' .. st)
+      chat('Radio Lanjutan (Auto Mix) saat pilih lagu: ' .. st)
     end)
     sampRegisterChatCommand('rfav', function() favChat() end)
     sampRegisterChatCommand('rsleep', function(arg)

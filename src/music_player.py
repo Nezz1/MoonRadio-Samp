@@ -690,7 +690,7 @@ class MoonRadioBridge:
 
     def handle_home(self, seq: str, seed_info: str = ""):
         """
-        Ambil beranda asli YouTube Music (`ytm.get_home()` + `ytm.get_explore()` + radio pintar
+        Ambil beranda YouTube Music (radio pintar berdasarkan lagu terakhir + `ytm.get_home()` + rak Populer Indonesia)
         berdasarkan lagu yang baru diputar) lalu tulis ke `resp_home.txt` dan `resp_search.txt`.
         """
         try:
@@ -772,27 +772,18 @@ class MoonRadioBridge:
             except Exception as e:
                 print(f"⚠️ [Home API Notice] get_home: {e}")
 
-            # 3) Rak Explore & Trending YouTube Music (ytm.get_explore)
-            try:
-                exp = self.ytm.get_explore() or {}
-                trending_items = (exp.get("trending") or {}).get("items") or []
-                for it in trending_items[:12]:
-                    if isinstance(it, dict) and it.get("videoId"):
-                        add_track("Trending di YouTube Music", it)
-                for alb in (exp.get("new_releases") or [])[:8]:
-                    if isinstance(alb, dict):
-                        apid = alb.get("audioPlaylistId") or alb.get("browseId")
-                        if apid:
-                            artists_str = ", ".join(
-                                a.get("name", "") for a in (alb.get("artists") or []) if isinstance(a, dict) and a.get("name")
-                            )
-                            add_playlist("Rilisan Album Baru", str(apid), alb.get("title") or "Album", artists_str or "Album Baru", alb.get("thumbnails") or [])
-            except Exception:
-                pass
+            # 3) Rak "Populer Indonesia" sebagai pengganti Trending Global, agar rekomendasi
+            #    tidak tiba-tiba melompat ke lagu dari negara lain.
+            for q in ("Lagu Indonesia Terpopuler", "Lagu Indonesia Hits Terbaru", "Lagu Galau Sad Indonesia"):
+                try:
+                    for it in cari_lagu(self.ytm, q, limit=8):
+                        add_track("Populer Indonesia", it)
+                except Exception:
+                    pass
 
             # 4) Fallback pencarian bila koneksi/region mengembalikan beranda tipis
             if len(all_tracks) < 10:
-                for q in ("Lagu Indonesia Populer Hits", "Top Global Hits", "Lagu Galau Sad Indonesia"):
+                for q in ("Lagu Indonesia Populer Hits", "Lagu Indonesia Terbaru"):
                     try:
                         for it in cari_lagu(self.ytm, q, limit=8):
                             add_track("Populer Pilihan", it)
